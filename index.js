@@ -3,7 +3,7 @@ const express = require('express')
 const cors = require('cors')
 const { MongoClient, ServerApiVersion } = require('mongodb')
 const admin = require('firebase-admin')
-const port = process.env.PORT || 3000
+const port = process.env.PORT || 5555
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString(
   'utf-8'
 )
@@ -53,6 +53,34 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 })
 async function run() {
   try {
+
+    // Connect the client to the server	(optional starting in v4.7)
+    // garmentsDB.products
+    const db = client.db("garmentsDB");
+    const productsCollection = db.collection("products");
+
+
+
+    //////////////////////////////////////////////////////
+    // POST All Products
+
+    app.post("/products", async (req, res) => {
+      const productData = req.body;
+      console.log(productData);
+      const result = await productsCollection.insertOne(productData);
+      res.send(result);
+    });
+
+    // GET all Products
+
+    app.get("/products", async (req, res) => {
+      const result = await productsCollection.find().toArray();
+      res.send(result);
+    });
+
+    //////////////////////////////////////////////////////
+
+
     // Send a ping to confirm a successful connection
     await client.db('admin').command({ ping: 1 })
     console.log(
@@ -65,9 +93,9 @@ async function run() {
 run().catch(console.dir)
 
 app.get('/', (req, res) => {
-  res.send('Server is talking..')
+  res.send('TailorFlow Server is talking..')
 })
 
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`)
+  console.log(`TailorFlow Server is running on port ${port}`)
 })
