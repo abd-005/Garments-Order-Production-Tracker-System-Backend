@@ -1,7 +1,7 @@
 require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
-const { MongoClient, ServerApiVersion } = require('mongodb')
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb')
 const admin = require('firebase-admin')
 const port = process.env.PORT || 5555
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString(
@@ -19,7 +19,6 @@ app.use(
     origin: [
       'http://localhost:5173',
       'http://localhost:5174',
-      'https://b12-m11-session.web.app',
     ],
     credentials: true,
     optionSuccessStatus: 200,
@@ -77,7 +76,15 @@ async function run() {
       const result = await productsCollection.find().toArray();
       res.send(result);
     });
+   
+   
+    // GET Single Product
 
+    app.get('/product/:id', async (req, res) => {
+      const id = req.params.id
+      const result = await productsCollection.findOne({ _id: new ObjectId(id) })
+      res.send(result)
+    })
     //////////////////////////////////////////////////////
 
 
