@@ -58,13 +58,14 @@ async function run() {
     // garmentsDB.products
     const db = client.db("garmentsDB");
     const productsCollection = db.collection("products");
+    const ordersCollection = db.collection("orders");
 
     //////////////////////////////////////////////////////
     // POST All Products
 
     app.post("/products", async (req, res) => {
       const productData = req.body;
-      console.log(productData);
+      // console.log(productData);
       const result = await productsCollection.insertOne(productData);
       res.send(result);
     });
@@ -90,7 +91,8 @@ async function run() {
     // Payment endpoints
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
-      console.log(paymentInfo);
+            // console.log(paymentInfo);
+            // return
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -105,7 +107,7 @@ async function run() {
             },
             // adjustable_quantity for multiple quantity
             adjustable_quantity: {
-              enabled: "True",
+              enabled: true,
               minimum: paymentInfo?.minimum,
               maximum: paymentInfo?.maximum,
             },
@@ -117,16 +119,68 @@ async function run() {
         metadata: {
           productId: paymentInfo?.productId,
           customer: paymentInfo?.customer.email,
-          manager:  paymentInfo?.manager.email,
- 
-
+          manager: paymentInfo?.manager.email,
+          orderQuantity: paymentInfo?.orderQuantity,
         },
-        success_url: `${process.env.CLIENT_DOMAIN}/dashboard/my-orders`,
+
+        success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
       });
-      console.log("session URL:----->", session.url);
-      console.log("session :----->", session);
+      // console.log("session URL:----->", session.url);
+      // console.log("session :----->", session);
       res.send({ url: session.url });
+    });
+
+    app.post("/payment-success", async (req, res) => {
+      const { sessionId } = req.body;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      // console.log("-------Session-------------: ", session);
+      // return;
+      const product = await productsCollection.findOne({
+        _id: new ObjectId(session.metadata.productId),
+      });
+      // console.log(product); return
+      // const order = await ordersCollection.findOne({
+      //   transactionId: session.payment_intent,
+      // });
+
+      if (session.status === "complete" ) {
+        // save order data in db
+        const orderInfo = {
+          productId: session.metadata.productId,
+          transactionId: session.payment_intent,
+          customer: session.metadata.customer,
+          status: "pending", // session.metadata.status = value is *complete*
+          manager: product?.manager,
+          name: product?.title,
+          category: product?.category,
+          quantity: Number(session.metadata.orderQuantity),
+          price: session.amount_total / 100,
+          image: product?.images[0],
+          // country: session.customer_details.country,
+        };
+        // console.log(orderInfo);return 
+        const result = await ordersCollection.insertOne(orderInfo);
+        // update product quantity
+        const quantity = Number(result.quantity)
+        await productsCollection.updateOne(
+          {
+            _id: new ObjectId(session.metadata.productId),
+          },
+          { $inc: { quantity: -quantity } }
+        );
+
+        return res.send({
+          transactionId: session.payment_intent,
+          orderId: result.insertedId,
+        });
+      }
+      res.send(
+        res.send({
+          transactionId: session.payment_intent,
+          orderId: order._id,
+        })
+      );
     });
 
     // Send a ping to confirm a successful connection
