@@ -203,6 +203,15 @@ async function run() {
         .toArray();
       res.send(result);
     });
+    
+    // get all orders for a manager by email
+    app.get("/manage-orders/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await ordersCollection
+        .find({ customer: email })
+        .toArray();
+      res.send(result);
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
