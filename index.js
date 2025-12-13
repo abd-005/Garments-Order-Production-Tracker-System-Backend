@@ -8,12 +8,21 @@ const port = process.env.PORT || 5555;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
+const crypto = require("crypto");
 const serviceAccount = JSON.parse(decoded);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
 const app = express();
+
+function generateTrackingId() {
+    const prefix = "PRCL"; // your brand prefix
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
+
+    return `${prefix}-${date}-${random}`;
+}
 // middleware
 app.use(
   cors({
@@ -140,11 +149,11 @@ async function run() {
         _id: new ObjectId(session.metadata.productId),
       });
       // console.log(product); return
-      // const order = await ordersCollection.findOne({
-      //   transactionId: session.payment_intent,
-      // });
+      const order = await ordersCollection.findOne({
+        transactionId: session.payment_intent,
+      });
 
-      if (session.status === "complete" ) {
+      if (session.status === "complete" && product && !order ) {
         // save order data in db
         const orderInfo = {
           productId: session.metadata.productId,
@@ -157,6 +166,7 @@ async function run() {
           quantity: Number(session.metadata.orderQuantity),
           price: session.amount_total / 100,
           image: product?.images[0],
+          trackingId: generateTrackingId()
           // country: session.customer_details.country,
         };
         // console.log(orderInfo);return 
@@ -167,20 +177,31 @@ async function run() {
           {
             _id: new ObjectId(session.metadata.productId),
           },
-          { $inc: { quantity: -quantity } }
+          // { $inc: { quantity: - quantity } }
         );
 
         return res.send({
           transactionId: session.payment_intent,
           orderId: result.insertedId,
+          trackingId: result.trackingId,
         });
       }
       res.send(
         res.send({
           transactionId: session.payment_intent,
           orderId: order._id,
+          trackingId: trackingId,
         })
       );
+    });
+
+    // get all orders for a customer by email
+    app.get("/my-orders/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await ordersCollection
+        .find({ customer: email })
+        .toArray();
+      res.send(result);
     });
 
     // Send a ping to confirm a successful connection
