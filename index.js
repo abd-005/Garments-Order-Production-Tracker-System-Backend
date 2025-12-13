@@ -17,11 +17,11 @@ admin.initializeApp({
 const app = express();
 
 function generateTrackingId() {
-    const prefix = "PRCL"; // your brand prefix
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
-    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
+  const prefix = "PRCL"; // your brand prefix
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+  const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
 
-    return `${prefix}-${date}-${random}`;
+  return `${prefix}-${date}-${random}`;
 }
 // middleware
 app.use(
@@ -100,8 +100,8 @@ async function run() {
     // Payment endpoints
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
-            // console.log(paymentInfo);
-            // return
+      // console.log(paymentInfo);
+      // return
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -163,21 +163,21 @@ async function run() {
           manager: product?.manager,
           name: product?.title,
           category: product?.category,
-          quantity: Number(session.metadata.orderQuantity),
+          quantity: parseInt(session.metadata.orderQuantity),
           price: session.amount_total / 100,
           image: product?.images[0],
           trackingId: generateTrackingId()
           // country: session.customer_details.country,
         };
-        // console.log(orderInfo);return 
+        // console.log(orderInfo);return
         const result = await ordersCollection.insertOne(orderInfo);
         // update product quantity
-        const quantity = Number(result.quantity)
+        const quantity = parseInt(orderInfo.quantity)
         await productsCollection.updateOne(
           {
             _id: new ObjectId(session.metadata.productId),
           },
-          // { $inc: { quantity: - quantity } }
+          { $inc: { quantity: - quantity } }
         );
 
         return res.send({
@@ -188,9 +188,9 @@ async function run() {
       }
       res.send(
         res.send({
-          transactionId: session.payment_intent,
           orderId: order._id,
-          trackingId: trackingId,
+          trackingId: order.trackingId,
+          transactionId: session.payment_intent,
         })
       );
     });
@@ -198,20 +198,28 @@ async function run() {
     // get all orders for a customer by email
     app.get("/my-orders/:email", async (req, res) => {
       const email = req.params.email;
-      const result = await ordersCollection
-        .find({ customer: email })
-        .toArray();
+      const result = await ordersCollection.find({ customer: email }).toArray();
       res.send(result);
     });
-    
-    // get all orders for a manager by email
-    app.get("/manage-orders/:email", async (req, res) => {
+
+    // get all products for a manager
+    app.get("/manage-products/:email", async (req, res) => {
       const email = req.params.email;
-      const result = await ordersCollection
-        .find({ customer: email })
+      const result = await productsCollection
+        .find({ "manager.email": email })
         .toArray();
       res.send(result);
     });
+
+    // GET pending orders for a manager
+    app.get("/pending-orders/:email", async (req, res) => {
+            const email = req.params.email;
+        const pending = await ordersCollection
+          .find({ "manager.email": email, status: "pending" })
+          .toArray();
+        return res.json(pending);
+    });
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
