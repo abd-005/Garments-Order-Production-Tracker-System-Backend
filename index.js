@@ -153,7 +153,7 @@ async function run() {
         transactionId: session.payment_intent,
       });
 
-      if (session.status === "complete" && product && !order ) {
+      if (session.status === "complete" && product && !order) {
         // save order data in db
         const orderInfo = {
           productId: session.metadata.productId,
@@ -166,18 +166,18 @@ async function run() {
           quantity: parseInt(session.metadata.orderQuantity),
           price: session.amount_total / 100,
           image: product?.images[0],
-          trackingId: generateTrackingId()
+          trackingId: generateTrackingId(),
           // country: session.customer_details.country,
         };
         // console.log(orderInfo);return
         const result = await ordersCollection.insertOne(orderInfo);
         // update product quantity
-        const quantity = parseInt(orderInfo.quantity)
+        const quantity = parseInt(orderInfo.quantity);
         await productsCollection.updateOne(
           {
             _id: new ObjectId(session.metadata.productId),
           },
-          { $inc: { quantity: - quantity } }
+          { $inc: { quantity: -quantity } }
         );
 
         return res.send({
@@ -213,13 +213,22 @@ async function run() {
 
     // GET pending orders for a manager
     app.get("/pending-orders/:email", async (req, res) => {
-            const email = req.params.email;
-        const pending = await ordersCollection
-          .find({ "manager.email": email, status: "pending" })
-          .toArray();
-        return res.json(pending);
+      const email = req.params.email;
+      const pending = await ordersCollection
+        .find({ "manager.email": email, status: "pending" })
+        .toArray();
+      return res.send(pending);
     });
 
+    // GET approved orders
+    app.get("/approved-orders/:email", async (req, res) => {
+              const email = req.params.email;
+        const approved = await ordersCollection
+          .find({  "manager.email": email, status: "approved" })
+          .toArray();
+        return res.send(approved);
+      } 
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
