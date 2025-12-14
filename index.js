@@ -68,6 +68,7 @@ async function run() {
     const db = client.db("garmentsDB");
     const productsCollection = db.collection("products");
     const ordersCollection = db.collection("orders");
+    const usersCollection = db.collection("users");
 
     //////////////////////////////////////////////////////
     // POST All Products
@@ -222,13 +223,44 @@ async function run() {
 
     // GET approved orders
     app.get("/approved-orders/:email", async (req, res) => {
-              const email = req.params.email;
-        const approved = await ordersCollection
-          .find({  "manager.email": email, status: "approved" })
-          .toArray();
-        return res.send(approved);
-      } 
-    );
+      const email = req.params.email;
+      const approved = await ordersCollection
+        .find({ "manager.email": email, status: "approved" })
+        .toArray();
+      return res.send(approved);
+    });
+
+    // save or update a user in db
+    app.post('/user', async (req, res) => {
+      const userData = req.body;
+      userData.created_at = new Date().toISOString()
+      userData.last_loggedIn = new Date().toISOString()
+      userData.status = 'pending',
+      userData.role = 'Buyer'
+      console.log('From Data: ----> ',userData)
+
+      const query = {
+        email: userData.email,
+      }
+
+      const alreadyExists = await usersCollection.findOne(query)
+      console.log('User Already Exists---> ', !!alreadyExists)
+
+      if (alreadyExists) {
+        console.log('Updating user info......')
+        const result = await usersCollection.updateOne(query, {
+          $set: {
+            last_loggedIn: new Date().toISOString(),
+          },
+        })
+        return res.send(result)
+      }
+
+      console.log('Saving new user info......')
+      const result = await usersCollection.insertOne(userData)
+      console.log("\n \n user data: --------> ", userData)
+      res.send(result)
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
