@@ -70,6 +70,19 @@ async function run() {
     const ordersCollection = db.collection("orders");
     const usersCollection = db.collection("users");
 
+    //role middleware
+
+    const verifyADMIN = async (req, res, next) => {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "admin") {
+        return res
+        .status(403)
+        .send({ message: "Admin only Action!", role: user?.role });
+      }
+      next();
+    };
+
     //////////////////////////////////////////////////////
     // POST All Products
 
@@ -261,6 +274,14 @@ async function run() {
     app.get("/user/role", verifyJWT, async (req, res) => {
       const result = await usersCollection.findOne({ email : req.tokenEmail });
       res.send({ role: result?.role, status: result?.status });
+    });
+
+    // GET all users for admin
+    app.get("/manage-users",verifyJWT,verifyADMIN, async (req, res) => {
+        const allUsers = await usersCollection
+        .find()
+        .toArray();
+          return res.send(allUsers);
     });
 
     // Send a ping to confirm a successful connection
