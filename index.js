@@ -197,35 +197,31 @@ async function run() {
     });
 
     // get all orders for a customer by email
-    app.get("/my-orders/:email", async (req, res) => {
-      const email = req.params.email;
-      const result = await ordersCollection.find({ customer: email }).toArray();
+    app.get("/my-orders",verifyJWT, async (req, res) => {
+      const result = await ordersCollection.find({ customer: req.tokenEmail }).toArray();
       res.send(result);
     });
 
     // get all products for a manager
-    app.get("/manage-products/:email", async (req, res) => {
-      const email = req.params.email;
+    app.get("/manage-products",verifyJWT, async (req, res) => {
       const result = await productsCollection
-        .find({ "manager.email": email })
+        .find({ "manager.email": req.tokenEmail })
         .toArray();
       res.send(result);
     });
 
     // GET pending orders for a manager
-    app.get("/pending-orders/:email", async (req, res) => {
-      const email = req.params.email;
+    app.get("/pending-orders",verifyJWT, async (req, res) => {
       const pending = await ordersCollection
-        .find({ "manager.email": email, status: "pending" })
+        .find({ "manager.email": req.tokenEmail, status: "pending" })
         .toArray();
       return res.send(pending);
     });
 
     // GET approved orders
-    app.get("/approved-orders/:email", async (req, res) => {
-      const email = req.params.email;
+    app.get("/approved-orders",verifyJWT, async (req, res) => {
       const approved = await ordersCollection
-        .find({ "manager.email": email, status: "approved" })
+        .find({ "manager.email": req.tokenEmail, status: "approved" })
         .toArray();
       return res.send(approved);
     });
@@ -262,9 +258,8 @@ async function run() {
     });
 
     // get a user's role
-    app.get("/user/role/:email", async (req, res) => {
-      const email = req.params.email;
-      const result = await usersCollection.findOne({ email });
+    app.get("/user/role", verifyJWT, async (req, res) => {
+      const result = await usersCollection.findOne({ email : req.tokenEmail });
       res.send({ role: result?.role, status: result?.status });
     });
 
