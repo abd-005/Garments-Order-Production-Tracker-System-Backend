@@ -285,6 +285,16 @@ async function run() {
       res.send(result);
     });
 
+    // update a user's role
+    app.patch("/update-role", verifyJWT, verifyADMIN, async (req, res) => {
+      const { email, role, status } = req.body;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role, status:"approved" }});
+      res.send(result)
+
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
