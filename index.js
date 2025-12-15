@@ -77,16 +77,76 @@ async function run() {
       const user = await usersCollection.findOne({ email });
       if (user?.role !== "admin") {
         return res
-        .status(403)
-        .send({ message: "Admin only Action!", role: user?.role });
+          .status(403)
+          .send({ message: "Admin only Action!", role: user?.role });
+      }
+      next();
+    };
+    const verifyBuyer = async (req, res, next) => {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if ((user?.role !== "buyer", user?.status !== "approved")) {
+        return res
+          .status(403)
+          .send({ message: "Buyer only Action!", role: user?.role });
+      }
+      next();
+    };
+    const verifyManager = async (req, res, next) => {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if ((user?.role !== "manager", user?.status !== "approved")) {
+        return res
+          .status(403)
+          .send({ message: "Manager only Action!", role: user?.role });
       }
       next();
     };
 
     //////////////////////////////////////////////////////
+      ////////////////////////////////////////////////////////////////
+
+    // get a user's role
+    app.get("/user/role",verifyJWT, async (req, res) => {
+      const result = await usersCollection.findOne({ email: req.tokenEmail });
+      res.send({ role: result?.role, status: result?.status });
+    });
+    // save or update a user in db
+    app.post("/user", async (req, res) => {
+      const userData = req.body;
+      userData.created_at = new Date().toISOString();
+      userData.last_loggedIn = new Date().toISOString();
+      (userData.status = "pending"),
+        (userData.role = "User"),
+        (userData.isSuspend = false);
+      console.log("From Data: ----> ", userData);
+
+      const query = {
+        email: userData.email,
+      };
+
+      const alreadyExists = await usersCollection.findOne(query);
+      console.log("User Already Exists---> ", !!alreadyExists);
+
+      if (alreadyExists) {
+        console.log("Updating user info......");
+        const result = await usersCollection.updateOne(query, {
+          $set: {
+            last_loggedIn: new Date().toISOString(),
+          },
+        });
+        return res.send(result);
+      }
+
+      console.log("Saving new user info......");
+      const result = await usersCollection.insertOne(userData);
+      console.log("\n \n user data: --------> ", userData);
+      res.send(result);
+    });
+
     // POST All Products
 
-    app.post("/products", async (req, res) => {
+    app.post("/products",verifyJWT,verifyBuyer, async (req, res) => {
       const productData = req.body;
       // console.log(productData);
       const result = await productsCollection.insertOne(productData);
@@ -99,62 +159,64 @@ async function run() {
       const result = await productsCollection.find().toArray();
       res.send(result);
     });
+    ///////////////////////////CUSTOMER ONLY///////////////////////////
 
     // GET Single Product
 
-    app.get("/product/:id", async (req, res) => {
+    app.get("/product/:id", verifyJWT, verifyBuyer, async (req, res) => {
       const id = req.params.id;
       const result = await productsCollection.findOne({
         _id: new ObjectId(id),
       });
       res.send(result);
     });
-    //////////////////////////////////////////////////////
 
     // Payment endpoints
-    app.post("/create-checkout-session", async (req, res) => {
-      const paymentInfo = req.body;
-      // console.log(paymentInfo);
-      // return
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: paymentInfo?.name,
-                description: paymentInfo?.description,
-                images: [paymentInfo?.images[0]],
+    app.post("/create-checkout-session", verifyJWT, verifyBuyer,
+      async (req, res) => {
+        const paymentInfo = req.body;
+        // console.log(paymentInfo);
+        // return
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: paymentInfo?.name,
+                  description: paymentInfo?.description,
+                  images: [paymentInfo?.images[0]],
+                },
+                unit_amount: paymentInfo?.unitPrice * 100,
               },
-              unit_amount: paymentInfo?.unitPrice * 100,
+              // adjustable_quantity for multiple quantity
+              adjustable_quantity: {
+                enabled: true,
+                minimum: paymentInfo?.minimum,
+                maximum: paymentInfo?.maximum,
+              },
+              quantity: paymentInfo?.orderQuantity,
             },
-            // adjustable_quantity for multiple quantity
-            adjustable_quantity: {
-              enabled: true,
-              minimum: paymentInfo?.minimum,
-              maximum: paymentInfo?.maximum,
-            },
-            quantity: paymentInfo?.orderQuantity,
+          ],
+          customer_email: paymentInfo?.customer?.email,
+          mode: "payment",
+          metadata: {
+            productId: paymentInfo?.productId,
+            customer: paymentInfo?.customer.email,
+            manager: paymentInfo?.manager.email,
+            orderQuantity: paymentInfo?.orderQuantity,
           },
-        ],
-        customer_email: paymentInfo?.customer?.email,
-        mode: "payment",
-        metadata: {
-          productId: paymentInfo?.productId,
-          customer: paymentInfo?.customer.email,
-          manager: paymentInfo?.manager.email,
-          orderQuantity: paymentInfo?.orderQuantity,
-        },
 
-        success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
-      });
-      // console.log("session URL:----->", session.url);
-      // console.log("session :----->", session);
-      res.send({ url: session.url });
-    });
+          success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
+        });
+        // console.log("session URL:----->", session.url);
+        // console.log("session :----->", session);
+        res.send({ url: session.url });
+      }
+    );
 
-    app.post("/payment-success", async (req, res) => {
+    app.post("/payment-success", verifyJWT, verifyBuyer, async (req, res) => {
       const { sessionId } = req.body;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       // console.log("-------Session-------------: ", session);
@@ -210,13 +272,17 @@ async function run() {
     });
 
     // get all orders for a customer by email
-    app.get("/my-orders",verifyJWT, async (req, res) => {
-      const result = await ordersCollection.find({ customer: req.tokenEmail }).toArray();
+    app.get("/my-orders", verifyJWT, verifyBuyer, async (req, res) => {
+      const result = await ordersCollection
+        .find({ mail: req.tokenEmail })
+        .toArray();
       res.send(result);
     });
 
+    /////////////////////////////MANAGER ONLY/////////////////////////
+
     // get all products for a manager
-    app.get("/manage-products",verifyJWT, async (req, res) => {
+    app.get("/manage-products", verifyJWT, verifyManager, async (req, res) => {
       const result = await productsCollection
         .find({ "manager.email": req.tokenEmail })
         .toArray();
@@ -224,7 +290,7 @@ async function run() {
     });
 
     // GET pending orders for a manager
-    app.get("/pending-orders",verifyJWT, async (req, res) => {
+    app.get("/pending-orders", verifyJWT, verifyManager, async (req, res) => {
       const pending = await ordersCollection
         .find({ "manager.email": req.tokenEmail, status: "pending" })
         .toArray();
@@ -232,50 +298,18 @@ async function run() {
     });
 
     // GET approved orders
-    app.get("/approved-orders",verifyJWT, async (req, res) => {
+    app.get("/approved-orders", verifyJWT, verifyManager, async (req, res) => {
       const approved = await ordersCollection
         .find({ "manager.email": req.tokenEmail, status: "approved" })
         .toArray();
       return res.send(approved);
     });
 
-    // save or update a user in db
-    app.post("/user", async (req, res) => {
-      const userData = req.body;
-      userData.created_at = new Date().toISOString();
-      userData.last_loggedIn = new Date().toISOString();
-      (userData.status = "pending"), (userData.role = "User");
-      console.log("From Data: ----> ", userData);
+  
+    //////////////////////////ADMIN ONLY////////////////////////////
 
-      const query = {
-        email: userData.email,
-      };
 
-      const alreadyExists = await usersCollection.findOne(query);
-      console.log("User Already Exists---> ", !!alreadyExists);
-
-      if (alreadyExists) {
-        console.log("Updating user info......");
-        const result = await usersCollection.updateOne(query, {
-          $set: {
-            last_loggedIn: new Date().toISOString(),
-          },
-        });
-        return res.send(result);
-      }
-
-      console.log("Saving new user info......");
-      const result = await usersCollection.insertOne(userData);
-      console.log("\n \n user data: --------> ", userData);
-      res.send(result);
-    });
-
-    // get a user's role
-    app.get("/user/role", verifyJWT, async (req, res) => {
-      const result = await usersCollection.findOne({ email : req.tokenEmail });
-      res.send({ role: result?.role, status: result?.status });
-    });
-
+    //////////////////////////////////////////////////////
     // get all users for admin
     app.get("/users", verifyJWT, verifyADMIN, async (req, res) => {
       const adminEmail = req.tokenEmail;
@@ -290,9 +324,22 @@ async function run() {
       const { email, role, status } = req.body;
       const result = await usersCollection.updateOne(
         { email },
-        { $set: { role, status:"approved" }});
-      res.send(result)
+        { $set: { role, status: "approved" } }
+      );
+      res.send(result);
+    });
 
+    // GET All orders for admin
+
+    app.get("/all-products", verifyJWT, verifyADMIN, async (req, res) => {
+      const result = await productsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // GET All orders for admin
+    app.get("/all-orders", verifyJWT, verifyADMIN, async (req, res) => {
+      const result = await ordersCollection.find().toArray();
+      res.send(result);
     });
 
     // Send a ping to confirm a successful connection
