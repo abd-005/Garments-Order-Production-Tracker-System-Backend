@@ -104,10 +104,10 @@ async function run() {
     };
 
     //////////////////////////////////////////////////////
-      ////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
 
     // get a user's role
-    app.get("/user/role",verifyJWT, async (req, res) => {
+    app.get("/user/role", verifyJWT, async (req, res) => {
       const result = await usersCollection.findOne({ email: req.tokenEmail });
       res.send({ role: result?.role, status: result?.status });
     });
@@ -146,7 +146,7 @@ async function run() {
 
     // POST All Products
 
-    app.post("/products",verifyJWT,verifyBuyer, async (req, res) => {
+    app.post("/products", verifyJWT, verifyBuyer, async (req, res) => {
       const productData = req.body;
       // console.log(productData);
       const result = await productsCollection.insertOne(productData);
@@ -172,54 +172,92 @@ async function run() {
     });
 
     // Payment endpoints
-    app.post("/create-checkout-session", verifyJWT, verifyBuyer,
-      async (req, res) => {
-        const paymentInfo = req.body;
-        // console.log(paymentInfo);
-        // return
-        const session = await stripe.checkout.sessions.create({
-          line_items: [
-            {
-              price_data: {
-                currency: "usd",
-                product_data: {
-                  name: paymentInfo?.name,
-                  description: paymentInfo?.description,
-                  images: [paymentInfo?.images[0]],
-                },
-                unit_amount: paymentInfo?.unitPrice * 100,
-              },
-              // adjustable_quantity for multiple quantity
-              adjustable_quantity: {
-                enabled: true,
-                minimum: paymentInfo?.minimum,
-                maximum: paymentInfo?.maximum,
-              },
-              quantity: paymentInfo?.orderQuantity,
-            },
-          ],
-          customer_email: paymentInfo?.customer?.email,
-          mode: "payment",
-          metadata: {
-            productId: paymentInfo?.productId,
-            customer: paymentInfo?.customer.email,
-            manager: paymentInfo?.manager.email,
-            orderQuantity: paymentInfo?.orderQuantity,
-          },
 
-          success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
+    ///// CASH ON DELIVERY ORDER
+    app.post("/cod-order", verifyJWT, verifyBuyer, async (req, res) => {
+      try {
+        const paymentInfo = req.body;
+        // console.log("\nCash on Deliver   :::   ===>\n",paymentInfo);return
+
+        const product = await productsCollection.findOne({
+          _id: new ObjectId(paymentInfo.productId),
         });
-        // console.log("session URL:----->", session.url);
-        // console.log("session :----->", session);
-        res.send({ url: session.url });
+
+        if (!product) {
+          return res.status(404).send({ message: "Product not found" });
+        }
+        const result = await ordersCollection.insertOne({
+          ...paymentInfo,
+          status: "pending",
+          customer: paymentInfo.customer.email,
+          quantity: parseInt(paymentInfo.orderQuantity),
+          price: parseInt(paymentInfo.totalPrice),
+          image: paymentInfo.images[0],
+          trackingId: generateTrackingId(),
+          createdAt: new Date().toISOString(),
+        });
+        await productsCollection.updateOne(
+          { _id: new ObjectId(paymentInfo.productId) },
+          { $inc: { quantity: -paymentInfo.orderQuantity } }
+        );
+
+        res.send({
+          success: true,
+          orderId: result.insertedId,
+          trackingId: paymentInfo.trackingId,
+        });
+      } catch (err) {
+        console.log(err);
+        res.status(500).send({ message: "COD order failed" });
       }
-    );
+    });
+
+    app.post("/create-checkout-session", verifyJWT, verifyBuyer, async (req, res) => {
+      const paymentInfo = req.body;
+      // console.log(paymentInfo);
+      // return
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: paymentInfo?.name,
+                description: paymentInfo?.description,
+                images: [paymentInfo?.images[0]],
+              },
+              unit_amount: paymentInfo?.unitPrice * 100,
+            },
+            // adjustable_quantity for multiple quantity
+            adjustable_quantity: {
+              enabled: true,
+              minimum: paymentInfo?.minimum,
+              maximum: paymentInfo?.maximum,
+            },
+            quantity: paymentInfo?.orderQuantity,
+          },
+        ],
+        customer_email: paymentInfo?.customer?.email,
+        mode: "payment",
+        metadata: {
+          productId: paymentInfo?.productId,
+          customer: paymentInfo?.customer.email,
+          manager: paymentInfo?.manager.email,
+          orderQuantity: paymentInfo?.orderQuantity,
+        },
+
+        success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
+      });
+      // console.log("session URL:----->", session.url);
+      // console.log("session :----->", session);
+      res.send({ url: session.url });
+    });
 
     app.post("/payment-success", verifyJWT, verifyBuyer, async (req, res) => {
       const { sessionId } = req.body;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      // console.log("-------Session-------------: ", session);
+      console.log("-------Session-------------: ", session);
       // return;
       const product = await productsCollection.findOne({
         _id: new ObjectId(session.metadata.productId),
@@ -231,7 +269,7 @@ async function run() {
 
       if (session.status === "complete" && product && !order) {
         // save order data in db
-        const orderInfo = {
+        const paymentInfo = {
           productId: session.metadata.productId,
           transactionId: session.payment_intent,
           customer: session.metadata.customer,
@@ -241,14 +279,15 @@ async function run() {
           category: product?.category,
           quantity: parseInt(session.metadata.orderQuantity),
           price: session.amount_total / 100,
+          paymentStatus: session.payment_status,
           image: product?.images[0],
           trackingId: generateTrackingId(),
-          // country: session.customer_details.country,
+          country: session.customer_details.country,
         };
-        // console.log(orderInfo);return
-        const result = await ordersCollection.insertOne(orderInfo);
+        // console.log(paymentInfo);return
+        const result = await ordersCollection.insertOne(paymentInfo);
         // update product quantity
-        const quantity = parseInt(orderInfo.quantity);
+        const quantity = parseInt(paymentInfo.quantity);
         await productsCollection.updateOne(
           {
             _id: new ObjectId(session.metadata.productId),
@@ -272,9 +311,9 @@ async function run() {
     });
 
     // get all orders for a customer by email
-    app.get("/my-orders", verifyJWT, verifyBuyer, async (req, res) => {
+    app.get("/my-orders", async (req, res) => {
       const result = await ordersCollection
-        .find({ mail: req.tokenEmail })
+        .find({ customer: "newuser@mail.com" })
         .toArray();
       res.send(result);
     });
@@ -305,9 +344,7 @@ async function run() {
       return res.send(approved);
     });
 
-  
     //////////////////////////ADMIN ONLY////////////////////////////
-
 
     //////////////////////////////////////////////////////
     // get all users for admin
