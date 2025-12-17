@@ -103,6 +103,16 @@ async function run() {
       }
       next();
     };
+    const verifyAdminOrManager = async (req, res, next) => {
+        const email = req.tokenEmail;
+        const user = await usersCollection.findOne({ email });
+        if ((user?.role !== "manager" || user?.role !== "admin", user?.status !== "approved")) {
+        return res
+          .status(403)
+          .send({ message: "Manager or Admin Action only!", role: user?.role });
+      }
+      next();
+    };
 
     //////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////
@@ -213,6 +223,7 @@ async function run() {
       }
     });
 
+    // create-checkout-session
     app.post(
       "/create-checkout-session",
       verifyJWT,
@@ -302,8 +313,7 @@ async function run() {
           },
           { $inc: { quantity: -quantity } }
         );
-        logTracking(trackingId, 'product_created');
-
+        logTracking(trackingId, "product_created");
 
         return res.send({
           transactionId: session.payment_intent,
@@ -388,32 +398,42 @@ async function run() {
       res.send(result);
     });
 
-app.patch('/update-product/:id', verifyJWT, verifyADMIN, async (req, res) => {
-  const id = req.params.id;
-  const payload = req.body; // send only the fields you want to change
-  if (payload.price !== undefined) payload.price = Number(payload.price);
-  if (payload.quantity !== undefined) payload.quantity = Number(payload.quantity);
-  if (payload.moq !== undefined) payload.moq = Number(payload.moq);
-  if (payload.showOnHome !== undefined) payload.showOnHome = Boolean(payload.showOnHome);
+    /////////////////////////////////////////////////////////////////////////
+    app.patch(
+      "/update-product/:id",
+      verifyJWT,
+      verifyAdminOrManager,
+      async (req, res) => {
+        const id = req.params.id;
+        const payload = req.body; // send only the fields you want to change
+        if (payload.price !== undefined) payload.price = Number(payload.price);
+        if (payload.quantity !== undefined)
+          payload.quantity = Number(payload.quantity);
+        if (payload.moq !== undefined) payload.moq = Number(payload.moq);
+        if (payload.showOnHome !== undefined)
+          payload.showOnHome = Boolean(payload.showOnHome);
 
-  const result = await productsCollection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { ...payload, updatedAt: new Date().toISOString() } }
-  );
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { ...payload, updatedAt: new Date().toISOString() } }
+        );
 
-  res.send(result);
-});
+        res.send(result);
+      }
+    );
 
+    app.delete(
+      "/delete-product/:id",
+      verifyJWT,
+      verifyAdminOrManager,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
 
-
-
-app.delete('/delete-product/:id', async (req, res) => {
-            const id = req.params.id;
-            const query = { _id: new ObjectId(id) }
-
-            const result = await productsCollection.deleteOne(query);
-            res.send(result);
-        })
+        const result = await productsCollection.deleteOne(query);
+        res.send(result);
+      }
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
