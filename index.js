@@ -363,6 +363,29 @@ async function run() {
       return res.send(approved);
     });
 
+    // PATCH status for a order
+app.patch('/order/:id/status', verifyJWT, verifyManager, async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
+    const updateFields = { status, updatedAt: new Date().toISOString() };
+
+    if (status === 'approved') {
+      updateFields.approvedAt = new Date().toISOString();
+      updateFields.rejectedAt = null;
+    } else if (status === 'rejected') {
+      updateFields.rejectedAt = new Date().toISOString();
+      updateFields.approvedAt = null;
+    }
+
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+    res.send(result);
+  } 
+);
+
+
     //////////////////////////ADMIN ONLY////////////////////////////
 
     //////////////////////////////////////////////////////
