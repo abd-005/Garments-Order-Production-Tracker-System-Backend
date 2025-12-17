@@ -40,7 +40,7 @@ app.use(express.json());
 // jwt middlewares
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
-  console.log(token);
+  // console.log(token);
   if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
   try {
     const decoded = await admin.auth().verifyIdToken(token);
@@ -69,6 +69,7 @@ async function run() {
     const productsCollection = db.collection("products");
     const ordersCollection = db.collection("orders");
     const usersCollection = db.collection("users");
+    const trackingsCollection = db.collection("trackings");
     //////////////////////////////////////////////////////
     //role middleware
 
@@ -119,7 +120,7 @@ async function run() {
       (userData.status = "pending"),
         (userData.role = "User"),
         (userData.isSuspend = false);
-      console.log("From Data: ----> ", userData);
+      // console.log("From Data: ----> ", userData);
 
       const query = {
         email: userData.email,
@@ -140,7 +141,7 @@ async function run() {
 
       console.log("Saving new user info......");
       const result = await usersCollection.insertOne(userData);
-      console.log("\n \n user data: --------> ", userData);
+      // console.log("\n \n user data: --------> ", userData);
       res.send(result);
     });
 
@@ -212,52 +213,57 @@ async function run() {
       }
     });
 
-    app.post("/create-checkout-session", verifyJWT, verifyBuyer, async (req, res) => {
-      const paymentInfo = req.body;
-      // console.log(paymentInfo);
-      // return
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: paymentInfo?.name,
-                description: paymentInfo?.description,
-                images: [paymentInfo?.images[0]],
+    app.post(
+      "/create-checkout-session",
+      verifyJWT,
+      verifyBuyer,
+      async (req, res) => {
+        const paymentInfo = req.body;
+        // console.log(paymentInfo);
+        // return
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: paymentInfo?.name,
+                  description: paymentInfo?.description,
+                  images: [paymentInfo?.images[0]],
+                },
+                unit_amount: paymentInfo?.unitPrice * 100,
               },
-              unit_amount: paymentInfo?.unitPrice * 100,
+              // adjustable_quantity for multiple quantity
+              adjustable_quantity: {
+                enabled: true,
+                minimum: paymentInfo?.minimum,
+                maximum: paymentInfo?.maximum,
+              },
+              quantity: paymentInfo?.orderQuantity,
             },
-            // adjustable_quantity for multiple quantity
-            adjustable_quantity: {
-              enabled: true,
-              minimum: paymentInfo?.minimum,
-              maximum: paymentInfo?.maximum,
-            },
-            quantity: paymentInfo?.orderQuantity,
+          ],
+          customer_email: paymentInfo?.customer?.email,
+          mode: "payment",
+          metadata: {
+            productId: paymentInfo?.productId,
+            customer: paymentInfo?.customer.email,
+            manager: paymentInfo?.manager.email,
+            orderQuantity: paymentInfo?.orderQuantity,
           },
-        ],
-        customer_email: paymentInfo?.customer?.email,
-        mode: "payment",
-        metadata: {
-          productId: paymentInfo?.productId,
-          customer: paymentInfo?.customer.email,
-          manager: paymentInfo?.manager.email,
-          orderQuantity: paymentInfo?.orderQuantity,
-        },
 
-        success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
-      });
-      // console.log("session URL:----->", session.url);
-      // console.log("session :----->", session);
-      res.send({ url: session.url });
-    });
+          success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_DOMAIN}/product/${paymentInfo?.productId}`,
+        });
+        // console.log("session URL:----->", session.url);
+        // console.log("session :----->", session);
+        res.send({ url: session.url });
+      }
+    );
 
     app.post("/payment-success", verifyJWT, verifyBuyer, async (req, res) => {
       const { sessionId } = req.body;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      console.log("-------Session-------------: ", session);
+      // console.log("-------Session-------------: ", session);
       // return;
       const product = await productsCollection.findOne({
         _id: new ObjectId(session.metadata.productId),
@@ -279,7 +285,9 @@ async function run() {
           category: product?.category,
           quantity: parseInt(session.metadata.orderQuantity),
           price: session.amount_total / 100,
+          currency: session.currency,
           paymentStatus: session.payment_status,
+          createdAt: new Date(),
           image: product?.images[0],
           trackingId: generateTrackingId(),
           country: session.customer_details.country,
@@ -294,6 +302,8 @@ async function run() {
           },
           { $inc: { quantity: -quantity } }
         );
+        logTracking(trackingId, 'product_created');
+
 
         return res.send({
           transactionId: session.payment_intent,
@@ -301,19 +311,18 @@ async function run() {
           trackingId: result.trackingId,
         });
       }
-      res.send(
-        res.send({
-          orderId: order._id,
-          trackingId: order.trackingId,
-          transactionId: session.payment_intent,
-        })
-      );
+
+      res.send({
+        orderId: order._id,
+        trackingId: order.trackingId,
+        transactionId: session.payment_intent,
+      });
     });
 
     // get all orders for a customer by email
-    app.get("/my-orders", async (req, res) => {
+    app.get("/my-orders", verifyJWT, verifyBuyer, async (req, res) => {
       const result = await ordersCollection
-        .find({ customer: "newuser@mail.com" })
+        .find({ customer: req.tokenEmail })
         .toArray();
       res.send(result);
     });
@@ -368,7 +377,7 @@ async function run() {
 
     // GET All orders for admin
 
-    app.get("/all-products", verifyJWT, verifyADMIN, async (req, res) => {
+    app.patch("/all-products", verifyJWT, verifyADMIN, async (req, res) => {
       const result = await productsCollection.find().toArray();
       res.send(result);
     });
@@ -378,6 +387,33 @@ async function run() {
       const result = await ordersCollection.find().toArray();
       res.send(result);
     });
+
+app.patch('/update-product/:id', verifyJWT, verifyADMIN, async (req, res) => {
+  const id = req.params.id;
+  const payload = req.body; // send only the fields you want to change
+  if (payload.price !== undefined) payload.price = Number(payload.price);
+  if (payload.quantity !== undefined) payload.quantity = Number(payload.quantity);
+  if (payload.moq !== undefined) payload.moq = Number(payload.moq);
+  if (payload.showOnHome !== undefined) payload.showOnHome = Boolean(payload.showOnHome);
+
+  const result = await productsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { ...payload, updatedAt: new Date().toISOString() } }
+  );
+
+  res.send(result);
+});
+
+
+
+
+app.delete('/delete-product/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
+
+            const result = await productsCollection.deleteOne(query);
+            res.send(result);
+        })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
