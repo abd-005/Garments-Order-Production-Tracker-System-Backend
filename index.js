@@ -104,9 +104,12 @@ async function run() {
       next();
     };
     const verifyAdminOrManager = async (req, res, next) => {
-        const email = req.tokenEmail;
-        const user = await usersCollection.findOne({ email });
-        if ((user?.role !== "manager" || user?.role !== "admin", user?.status !== "approved")) {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (
+        (user?.role !== "manager" || user?.role !== "admin",
+        user?.status !== "approved")
+      ) {
         return res
           .status(403)
           .send({ message: "Manager or Admin Action only!", role: user?.role });
@@ -115,6 +118,12 @@ async function run() {
     };
 
     //////////////////////////////////////////////////////
+
+    async function insertTrackingLog(log) {
+      const result = await trackingsCollection.insertOne(log);
+      return result;
+    }
+
     ////////////////////////////////////////////////////////////////
 
     // get a user's role
@@ -157,7 +166,7 @@ async function run() {
 
     // POST All Products
 
-    app.post("/products", verifyJWT, verifyBuyer, async (req, res) => {
+    app.post("/products", verifyJWT, async (req, res) => {
       const productData = req.body;
       // console.log(productData);
       const result = await productsCollection.insertOne(productData);
@@ -174,7 +183,7 @@ async function run() {
 
     // GET Single Product
 
-    app.get("/product/:id", verifyJWT, verifyBuyer, async (req, res) => {
+    app.get("/product/:id", verifyJWT,async (req, res) => {
       const id = req.params.id;
       const result = await productsCollection.findOne({
         _id: new ObjectId(id),
@@ -336,6 +345,50 @@ async function run() {
         .toArray();
       res.send(result);
     });
+    // Cancel an order (buyer only, simple)
+app.delete('/orders/:orderId', verifyJWT, async (req, res) => {
+    const orderId = req.params.orderId;
+    const deleteResult = await ordersCollection.deleteOne({ _id: new ObjectId(orderId) });
+
+    if (deleteResult.deletedCount === 1 && order.productId && order.quantity) {
+        await productsCollection.updateOne(
+          { _id: new ObjectId(order.productId) },
+          { $inc: { quantity: Number(order.quantity) } }
+        );
+    }
+
+    return res.send({ success: true, deletedCount: deleteResult.deletedCount });
+});
+// Cancel an order (buyer only, simple)
+app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
+    const orderId = req.params.orderId;
+
+    const order = await ordersCollection.findOne({ _id: new ObjectId(orderId) });
+
+    if (order.customer !== req.tokenEmail) {
+      return res.status(403).send({ message: 'Forbidden: you can only cancel your own orders' });
+    }
+    const update = {
+      $set: {
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    };
+
+    const result = await ordersCollection.updateOne({ _id: new ObjectId(orderId) }, update);
+
+
+      if (order.productId && order.quantity) {
+        await productsCollection.updateOne(
+          { _id: new ObjectId(order.productId) },
+          { $inc: { quantity: Number(order.quantity) } }
+        );
+      }
+    res.send({ success: true, modifiedCount: result.modifiedCount });
+ 
+});
+
 
     /////////////////////////////MANAGER ONLY/////////////////////////
 
@@ -356,7 +409,7 @@ async function run() {
     });
 
     // GET approved orders
-    app.get("/approved-orders", verifyJWT, verifyManager, async (req, res) => {
+    app.get("/approved-orders", verifyJWT, async (req, res) => {
       const approved = await ordersCollection
         .find({ "manager.email": req.tokenEmail, status: "approved" })
         .toArray();
@@ -364,27 +417,73 @@ async function run() {
     });
 
     // PATCH status for a order
-app.patch('/order/:id/status', verifyJWT, verifyManager, async (req, res) => {
-    const id = req.params.id;
-    const { status } = req.body;
-    const updateFields = { status, updatedAt: new Date().toISOString() };
+    app.patch(
+      "/order/:id/status",
+      verifyJWT,
+      verifyManager,
+      async (req, res) => {
+        const id = req.params.id;
+        const { status } = req.body;
+        const updateFields = { status, updatedAt: new Date().toISOString() };
 
-    if (status === 'approved') {
-      updateFields.approvedAt = new Date().toISOString();
-      updateFields.rejectedAt = null;
-    } else if (status === 'rejected') {
-      updateFields.rejectedAt = new Date().toISOString();
-      updateFields.approvedAt = null;
-    }
+        if (status === "approved") {
+          updateFields.approvedAt = new Date().toISOString();
+          updateFields.rejectedAt = null;
+        } else if (status === "rejected") {
+          updateFields.rejectedAt = new Date().toISOString();
+          updateFields.approvedAt = null;
+        }
 
-    const result = await ordersCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: updateFields }
+        const result = await ordersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateFields }
+        );
+        res.send(result);
+      }
     );
-    res.send(result);
-  } 
-);
 
+    // GET order details
+    app.get("/orders/:orderId", verifyJWT, async (req, res) => {
+      const id = req.params.orderId;
+      const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+      res.send(order);
+    });
+    // Add Tracking for a order
+    app.post(
+      "/orders/:orderId/tracking",
+      verifyJWT,
+      verifyManager,
+      async (req, res) => {
+        const orderId = req.params.orderId;
+
+        const order = await ordersCollection.findOne({
+          _id: new ObjectId(orderId),
+        });
+        const { status, location = "", note = "", timestamp } = req.body;
+        const log = {
+          orderId,
+          trackingId: order.trackingId || null,
+          status: String(status),
+          location: String(location),
+          note: String(note),
+          timestamp: timestamp
+            ? new Date(timestamp).toISOString()
+            : new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          addedBy: req.decoded_email || null,
+        };
+        const insertResult = await insertTrackingLog(log);
+        await ordersCollection.updateOne(
+          { _id: new ObjectId(orderId) },
+          {
+            $push: { tracking: log },
+            $set: { updatedAt: new Date().toISOString() },
+          }
+        );
+
+        res.send({ success: true, insertedId: insertResult.insertedId, log });
+      }
+    );
 
     //////////////////////////ADMIN ONLY////////////////////////////
 
@@ -457,6 +556,74 @@ app.patch('/order/:id/status', verifyJWT, verifyManager, async (req, res) => {
         res.send(result);
       }
     );
+    ///////////////////////////////////////////////////
+    // tracking logs for an order
+    app.get("/orders/:orderId/tracking", verifyJWT, async (req, res) => {
+      const orderId = req.params.orderId;
+      const logs = await trackingsCollection
+        .find({ orderId })
+        .sort({ timestamp: 1, createdAt: 1 })
+        .toArray();
+      if (!logs.length) {
+        const order = await ordersCollection.findOne({
+          _id: new ObjectId(orderId),
+        });
+        return res.send({ logs: order?.tracking || [] });
+      }
+      res.send({ logs });
+    });
+
+    // single tracking entry "Mark Delivered"
+    app.patch("/orders/:orderId/tracking", verifyJWT, async (req, res) => {
+      const orderId = req.params.orderId;
+
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(orderId),
+      });
+      if (!order) return res.status(404).send({ message: "Order not found" });
+      const { status, location = "", note = "", timestamp } = req.body;
+
+      const log = {
+        orderId,
+        trackingId: order.trackingId || null,
+        status: String(status),
+        location: String(location),
+        note: String(note),
+        timestamp: timestamp
+          ? new Date(timestamp).toISOString()
+          : new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        addedBy: req.decoded_email || null,
+      };
+
+      const insertResult = await insertTrackingLog(log);
+
+      await ordersCollection.updateOne(
+        { _id: new ObjectId(orderId) },
+        {
+          $push: { tracking: log },
+          $set: { updatedAt: new Date().toISOString() },
+        }
+      );
+
+      res.send({ success: true, insertedId: insertResult.insertedId, log });
+    });
+    // sets final status and deliveredAt
+    app.patch("/orders/close/:orderId", verifyJWT, async (req, res) => {
+      const orderId = req.params.orderId;
+      const update = {
+        $set: {
+          status: "delivered",
+          deliveredAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(orderId) },
+        update
+      );
+      res.send({ success: true, modifiedCount: result.modifiedCount });
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
