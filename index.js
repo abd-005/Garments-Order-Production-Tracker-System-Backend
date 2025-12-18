@@ -188,10 +188,48 @@ async function run() {
 
     // GET all Products
 
+    // GET /products
     app.get("/products", async (req, res) => {
-      const result = await productsCollection.find().toArray();
-      res.send(result);
+      const {
+        search,
+        page = "1",
+        limit = "6",
+        sortBy = "createdAt",
+        sortDir = "desc",
+      } = req.query;
+
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const pageLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 6));
+      const skip = (pageNum - 1) * pageLimit;
+      const sortDirection = sortDir === "asc" ? 1 : -1;
+
+      const query = {};
+      if (search && String(search).trim()) {
+        const q = String(search).trim();
+        query.$or = [
+          { title: { $regex: q, $options: "i" } },
+          { description: { $regex: q, $options: "i" } },
+        ];
+      }
+
+      const total = await productsCollection.countDocuments(query);
+
+      const cursor = productsCollection
+        .find(query)
+        .sort({ [sortBy]: sortDirection })
+        .skip(skip)
+        .limit(pageLimit);
+
+      const products = await cursor.toArray();
+
+      res.send({
+        products,
+        total,
+        page: pageNum,
+        limit: pageLimit,
+      });
     });
+
     ///////////////////////////CUSTOMER ONLY///////////////////////////
 
     // GET Single Product
@@ -752,11 +790,11 @@ async function run() {
     });
     // User Profile endpoint
     app.get("/user", verifyJWT, async (req, res) => {
-        const user = await usersCollection.findOne(
-          { email: req.tokenEmail },
-          { projection: { password: 0 } }
-        );
-        res.send({ user });
+      const user = await usersCollection.findOne(
+        { email: req.tokenEmail },
+        { projection: { password: 0 } }
+      );
+      res.send({ user });
     });
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
