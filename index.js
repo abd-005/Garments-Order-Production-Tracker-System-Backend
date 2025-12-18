@@ -117,6 +117,30 @@ async function run() {
       next();
     };
 
+    async function blockSuspendedBuyer(req, res, next) {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user.role === "buyer" && user.suspended?.status) {
+        return res.status(403).send({
+          message: "Account suspended. New orders/bookings are not allowed.",
+          feedback: user.suspended?.feedback || null,
+        });
+      }
+      next();
+    }
+
+    async function blockSuspendedManager(req, res, next) {
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user.role === "manager" && user.suspended?.status) {
+        return res.status(403).send({
+          message: "Account suspended. Allowed Manager Actions only.",
+          feedback: user.suspended?.feedback || null,
+        });
+      }
+      next();
+    }
+
     //////////////////////////////////////////////////////
 
     async function insertTrackingLog(log) {
@@ -136,9 +160,7 @@ async function run() {
       const userData = req.body;
       userData.created_at = new Date().toISOString();
       userData.last_loggedIn = new Date().toISOString();
-      (userData.status = "pending"),
-        (userData.role = "User"),
-        (userData.isSuspend = false);
+      (userData.status = "pending"), (userData.role = "User");
       // console.log("From Data: ----> ", userData);
 
       const query = {
@@ -164,15 +186,6 @@ async function run() {
       res.send(result);
     });
 
-    // POST All Products
-
-    app.post("/products", verifyJWT, async (req, res) => {
-      const productData = req.body;
-      // console.log(productData);
-      const result = await productsCollection.insertOne(productData);
-      res.send(result);
-    });
-
     // GET all Products
 
     app.get("/products", async (req, res) => {
@@ -183,7 +196,7 @@ async function run() {
 
     // GET Single Product
 
-    app.get("/product/:id", verifyJWT,async (req, res) => {
+    app.get("/product/:id", verifyJWT, async (req, res) => {
       const id = req.params.id;
       const result = await productsCollection.findOne({
         _id: new ObjectId(id),
@@ -194,49 +207,56 @@ async function run() {
     // Payment endpoints
 
     ///// CASH ON DELIVERY ORDER
-    app.post("/cod-order", verifyJWT, verifyBuyer, async (req, res) => {
-      try {
-        const paymentInfo = req.body;
-        // console.log("\nCash on Deliver   :::   ===>\n",paymentInfo);return
+    app.post(
+      "/cod-order",
+      verifyJWT,
+      verifyBuyer,
+      blockSuspendedBuyer,
+      async (req, res) => {
+        try {
+          const paymentInfo = req.body;
+          // console.log("\nCash on Deliver   :::   ===>\n",paymentInfo);return
 
-        const product = await productsCollection.findOne({
-          _id: new ObjectId(paymentInfo.productId),
-        });
+          const product = await productsCollection.findOne({
+            _id: new ObjectId(paymentInfo.productId),
+          });
 
-        if (!product) {
-          return res.status(404).send({ message: "Product not found" });
+          if (!product) {
+            return res.status(404).send({ message: "Product not found" });
+          }
+          const result = await ordersCollection.insertOne({
+            ...paymentInfo,
+            status: "pending",
+            customer: paymentInfo.customer.email,
+            quantity: parseInt(paymentInfo.orderQuantity),
+            price: parseInt(paymentInfo.totalPrice),
+            image: paymentInfo.images[0],
+            trackingId: generateTrackingId(),
+            createdAt: new Date().toISOString(),
+          });
+          await productsCollection.updateOne(
+            { _id: new ObjectId(paymentInfo.productId) },
+            { $inc: { quantity: -paymentInfo.orderQuantity } }
+          );
+
+          res.send({
+            success: true,
+            orderId: result.insertedId,
+            trackingId: paymentInfo.trackingId,
+          });
+        } catch (err) {
+          console.log(err);
+          res.status(500).send({ message: "COD order failed" });
         }
-        const result = await ordersCollection.insertOne({
-          ...paymentInfo,
-          status: "pending",
-          customer: paymentInfo.customer.email,
-          quantity: parseInt(paymentInfo.orderQuantity),
-          price: parseInt(paymentInfo.totalPrice),
-          image: paymentInfo.images[0],
-          trackingId: generateTrackingId(),
-          createdAt: new Date().toISOString(),
-        });
-        await productsCollection.updateOne(
-          { _id: new ObjectId(paymentInfo.productId) },
-          { $inc: { quantity: -paymentInfo.orderQuantity } }
-        );
-
-        res.send({
-          success: true,
-          orderId: result.insertedId,
-          trackingId: paymentInfo.trackingId,
-        });
-      } catch (err) {
-        console.log(err);
-        res.status(500).send({ message: "COD order failed" });
       }
-    });
+    );
 
     // create-checkout-session
     app.post(
       "/create-checkout-session",
       verifyJWT,
       verifyBuyer,
+      blockSuspendedBuyer,
       async (req, res) => {
         const paymentInfo = req.body;
         // console.log(paymentInfo);
@@ -346,38 +366,53 @@ async function run() {
       res.send(result);
     });
     // Cancel an order (buyer only, simple)
-app.delete('/orders/:orderId', verifyJWT, async (req, res) => {
-    const orderId = req.params.orderId;
-    const deleteResult = await ordersCollection.deleteOne({ _id: new ObjectId(orderId) });
+    app.delete("/orders/:orderId", verifyJWT, async (req, res) => {
+      const orderId = req.params.orderId;
+      const deleteResult = await ordersCollection.deleteOne({
+        _id: new ObjectId(orderId),
+      });
 
-    if (deleteResult.deletedCount === 1 && order.productId && order.quantity) {
+      if (
+        deleteResult.deletedCount === 1 &&
+        order.productId &&
+        order.quantity
+      ) {
         await productsCollection.updateOne(
           { _id: new ObjectId(order.productId) },
           { $inc: { quantity: Number(order.quantity) } }
         );
-    }
+      }
 
-    return res.send({ success: true, deletedCount: deleteResult.deletedCount });
-});
-// Cancel an order (buyer only, simple)
-app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
-    const orderId = req.params.orderId;
+      return res.send({
+        success: true,
+        deletedCount: deleteResult.deletedCount,
+      });
+    });
+    // Cancel an order (buyer only, simple)
+    app.patch("/orders/cancel/:orderId", verifyJWT, async (req, res) => {
+      const orderId = req.params.orderId;
 
-    const order = await ordersCollection.findOne({ _id: new ObjectId(orderId) });
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(orderId),
+      });
 
-    if (order.customer !== req.tokenEmail) {
-      return res.status(403).send({ message: 'Forbidden: you can only cancel your own orders' });
-    }
-    const update = {
-      $set: {
-        status: 'cancelled',
-        cancelledAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    };
+      if (order.customer !== req.tokenEmail) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: you can only cancel your own orders" });
+      }
+      const update = {
+        $set: {
+          status: "cancelled",
+          cancelledAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      };
 
-    const result = await ordersCollection.updateOne({ _id: new ObjectId(orderId) }, update);
-
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(orderId) },
+        update
+      );
 
       if (order.productId && order.quantity) {
         await productsCollection.updateOne(
@@ -385,12 +420,25 @@ app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
           { $inc: { quantity: Number(order.quantity) } }
         );
       }
-    res.send({ success: true, modifiedCount: result.modifiedCount });
- 
-});
-
+      res.send({ success: true, modifiedCount: result.modifiedCount });
+    });
 
     /////////////////////////////MANAGER ONLY/////////////////////////
+
+    // POST All Products
+
+    app.post(
+      "/products",
+      verifyJWT,
+      verifyManager,
+      blockSuspendedManager,
+      async (req, res) => {
+        const productData = req.body;
+        console.log(productData);
+        const result = await productsCollection.insertOne(productData);
+        res.send(result);
+      }
+    );
 
     // get all products for a manager
     app.get("/manage-products", verifyJWT, verifyManager, async (req, res) => {
@@ -421,6 +469,7 @@ app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
       "/order/:id/status",
       verifyJWT,
       verifyManager,
+      blockSuspendedManager,
       async (req, res) => {
         const id = req.params.id;
         const { status } = req.body;
@@ -490,11 +539,60 @@ app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
     //////////////////////////////////////////////////////
     // get all users for admin
     app.get("/users", verifyJWT, verifyADMIN, async (req, res) => {
-      const adminEmail = req.tokenEmail;
-      const result = await usersCollection
-        .find({ email: { $ne: adminEmail } })
-        .toArray();
-      res.send(result);
+      const othersQuery = { email: { $ne: "admin@gamil.com" } };
+      const query = { ...othersQuery };
+      const {
+        searchText,
+        role,
+        status,
+        page = "1",
+        limit = "20",
+        sortBy = "createdAt",
+        sortDir = "desc",
+      } = req.query;
+
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const pageLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+      const skip = (pageNum - 1) * pageLimit;
+
+      if (searchText && String(searchText).trim()) {
+        const q = String(searchText).trim();
+        query.$or = [
+          { name: { $regex: q, $options: "i" } },
+          { email: { $regex: q, $options: "i" } },
+        ];
+      }
+      if (role && String(role).trim()) {
+        query.role = String(role).trim();
+      }
+      if (status === "suspended") {
+        query["suspended.status"] = true;
+      } else if (status === "active") {
+        query.$or = query.$or || [];
+        query.$or.push(
+          { "suspended.status": { $exists: false } },
+          { "suspended.status": false }
+        );
+      }
+      const sortDirection = sortDir === "asc" ? 1 : -1;
+      const sort = { [sortBy]: sortDirection };
+
+      const total = await usersCollection.countDocuments(query);
+      const cursor = usersCollection
+        .find(query)
+        .sort(sort)
+        .skip(skip)
+        .limit(pageLimit);
+
+      const users = await cursor.toArray();
+
+      res.send({
+        users,
+        total,
+        email: { $ne: "admin@gamil.com" },
+        page: pageNum,
+        limit: pageLimit,
+      });
     });
 
     // update a user's role
@@ -518,6 +616,34 @@ app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
     app.get("/all-orders", verifyJWT, verifyADMIN, async (req, res) => {
       const result = await ordersCollection.find().toArray();
       res.send(result);
+    });
+
+    //suspend-user
+    app.patch("/suspend-user", verifyJWT, verifyADMIN, async (req, res) => {
+      const {
+        email,
+        suspended,
+        suspendedAt = null,
+        reason = null,
+        feedback = null,
+      } = req.body;
+      const update = {
+        suspended: {
+          status: Boolean(suspended),
+          suspendedAt: suspended
+            ? suspendedAt || new Date().toISOString()
+            : null,
+          reason: reason || null,
+          feedback: feedback || null,
+          suspendedBy: req.tokenEmail || null,
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: update }
+      );
+      res.send({ success: true, modifiedCount: result.modifiedCount });
     });
 
     /////////////////////////////////////////////////////////////////////////
@@ -624,7 +750,14 @@ app.patch('/orders/cancel/:orderId', verifyJWT, async (req, res) => {
       );
       res.send({ success: true, modifiedCount: result.modifiedCount });
     });
-
+    // User Profile endpoint
+    app.get("/user", verifyJWT, async (req, res) => {
+        const user = await usersCollection.findOne(
+          { email: req.tokenEmail },
+          { projection: { password: 0 } }
+        );
+        res.send({ user });
+    });
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
