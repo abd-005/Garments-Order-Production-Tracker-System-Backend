@@ -718,6 +718,10 @@ app.get("/", (req, res) => {
   res.send("TailorFlow Server is talking..");
 });
 
-app.listen(port, () => {
-  console.log(`TailorFlow Server is running on port ${port}`);
-});
+if (require.main === module) {
+  app.listen(port, () => {
+    console.log(`TailorFlow Server is running on port ${port}`);
+  });
+}
+
+module.exports = app;
