@@ -1,13 +1,40 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const crypto = require("crypto");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
 const port = process.env.PORT || 5555;
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString("utf-8");
-const crypto = require("crypto");
-const serviceAccount = JSON.parse(decoded);
+
+const REQUIRED_ENV = [
+  "MONGODB_URI",
+  "FB_SERVICE_KEY",
+  "STRIPE_SECRET_KEY",
+  "CLIENT_DOMAIN",
+];
+const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(
+    "Missing required environment variables:",
+    missingEnv.join(", ")
+  );
+  process.exit(1);
+}
+
+let serviceAccount;
+try {
+  const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+    "utf-8"
+  );
+  serviceAccount = JSON.parse(decoded);
+} catch (error) {
+  console.error(
+    "Invalid FB_SERVICE_KEY: expected a base64-encoded JSON service account key."
+  );
+  process.exit(1);
+}
+
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -36,6 +63,35 @@ app.use(
   })
 );
 app.use(express.json());
+
+// Database readiness gate (serverless-friendly)
+let dbReady = false;
+let dbInitPromise = null;
+
+async function ensureDbReady() {
+  if (dbReady) return;
+  if (!dbInitPromise) {
+    dbInitPromise = run()
+      .then(() => {
+        dbReady = true;
+      })
+      .catch((error) => {
+        dbInitPromise = null;
+        throw error;
+      });
+  }
+  await dbInitPromise;
+}
+
+app.use(async (req, res, next) => {
+  try {
+    await ensureDbReady();
+    next();
+  } catch (error) {
+    console.error("Database not ready:", error.message);
+    res.status(503).send({ message: "Service unavailable. Please try again." });
+  }
+});
 
 // jwt middlewares
 const verifyJWT = async (req, res, next) => {
@@ -83,6 +139,7 @@ const client = new MongoClient(process.env.MONGODB_URI, {
     strict: true,
     deprecationErrors: true,
   },
+  serverSelectionTimeoutMS: 5000,
 });
 
 async function run() {
@@ -110,7 +167,7 @@ async function run() {
     const verifyBuyer = async (req, res, next) => {
       const email = req.tokenEmail;
       const user = await usersCollection.findOne({ email });
-      if (user?.role !== "buyer" && user?.status !== "approved") {
+      if (user?.role !== "buyer" || user?.status !== "approved") {
         return res
           .status(403)
           .send({
@@ -124,7 +181,7 @@ async function run() {
     const verifyManager = async (req, res, next) => {
       const email = req.tokenEmail;
       const user = await usersCollection.findOne({ email });
-      if (user?.role !== "manager" && user?.status !== "approved") {
+      if (user?.role !== "manager" || user?.status !== "approved") {
         return res
           .status(403)
           .send({
@@ -154,7 +211,7 @@ async function run() {
     async function blockSuspendedBuyer(req, res, next) {
       const email = req.tokenEmail;
       const user = await usersCollection.findOne({ email });
-      if (user.role === "buyer" && user.suspended?.status) {
+      if (user?.role === "buyer" && user.suspended?.status) {
         return res.status(403).send({
           message: "Account suspended. New orders/bookings are not allowed.",
           feedback: user.suspended?.feedback || null,
@@ -166,7 +223,7 @@ async function run() {
     async function blockSuspendedManager(req, res, next) {
       const email = req.tokenEmail;
       const user = await usersCollection.findOne({ email });
-      if (user.role === "manager" && user.suspended?.status) {
+      if (user?.role === "manager" && user.suspended?.status) {
         return res.status(403).send({
           message: "Account suspended. Allowed Manager Actions only.",
           feedback: user.suspended?.feedback || null,
@@ -233,7 +290,6 @@ async function run() {
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const pageLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 6));
         const skip = (pageNum - 1) * pageLimit;
-        const sortDirection = sortDir === "asc" ? 1 : -1;
 
         const query = {};
         if (search && String(search).trim()) {
@@ -586,7 +642,7 @@ async function run() {
             ? new Date(timestamp).toISOString()
             : new Date().toISOString(),
           createdAt: new Date().toISOString(),
-          addedBy: req.decoded_email || null,
+          addedBy: req.tokenEmail || null,
         };
         const insertResult = await insertTrackingLog(log);
         await ordersCollection.updateOne(
@@ -603,7 +659,7 @@ async function run() {
 
     // ADMIN ONLY ROUTES
     app.get("/users", verifyJWT, verifyADMIN, async (req, res) => {
-      const othersQuery = { email: { $ne: "admin@gamil.com" } };
+      const othersQuery = { email: { $ne: "admin@gmail.com" } };
       const query = { ...othersQuery };
       const {
         searchText,
@@ -764,6 +820,8 @@ async function run() {
     app.patch(
       "/orders/:orderId/tracking",
       verifyJWT,
+      verifyManager,
+      blockSuspendedManager,
       blockDemoMutations,
       async (req, res) => {
         const orderId = req.params.orderId;
@@ -783,7 +841,7 @@ async function run() {
             ? new Date(timestamp).toISOString()
             : new Date().toISOString(),
           createdAt: new Date().toISOString(),
-          addedBy: req.decoded_email || null,
+          addedBy: req.tokenEmail || null,
         };
 
         const insertResult = await insertTrackingLog(log);
@@ -832,19 +890,25 @@ async function run() {
       "Pinged your deployment. You successfully connected to MongoDB!",
     );
   } finally {
-    // Ensures that the client will close when you finish/error
+    // Connection is intentionally kept alive for serverless warm instances.
   }
 }
-run().catch(console.dir);
 
 app.get("/", (req, res) => {
   res.send("TailorFlow Server is talking..");
 });
 
 if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`TailorFlow Server is running on port ${port}`);
-  });
+  ensureDbReady()
+    .then(() => {
+      app.listen(port, () => {
+        console.log(`TailorFlow Server is running on port ${port}`);
+      });
+    })
+    .catch((err) => {
+      console.error("Failed to start server:", err.message);
+      process.exit(1);
+    });
 }
 
 app.use((err, req, res, next) => {
@@ -853,13 +917,5 @@ app.use((err, req, res, next) => {
     message: "Internal Server Error",
   });
 });
-
-run()
-  .then(() => {
-    console.log("Database connected");
-  })
-  .catch(err => {
-    console.error("DB ERROR", err);
-  });
 
 module.exports = app;
