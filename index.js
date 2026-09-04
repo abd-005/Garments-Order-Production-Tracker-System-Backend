@@ -14,11 +14,9 @@ const REQUIRED_ENV = [
 ];
 const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missingEnv.length > 0) {
-  console.error(
-    "Missing required environment variables:",
-    missingEnv.join(", ")
+  throw new Error(
+    "Missing required environment variables: " + missingEnv.join(", ")
   );
-  process.exit(1);
 }
 
 let serviceAccount;
@@ -28,13 +26,19 @@ try {
   );
   serviceAccount = JSON.parse(decoded);
 } catch (error) {
-  console.error(
+  throw new Error(
     "Invalid FB_SERVICE_KEY: expected a base64-encoded JSON service account key."
   );
-  process.exit(1);
 }
 
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+let stripe;
+try {
+  stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+} catch (error) {
+  throw new Error(
+    "Invalid STRIPE_SECRET_KEY: Stripe failed to initialize with the provided key."
+  );
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -344,6 +348,7 @@ async function run() {
           if (!product) {
             return res.status(404).send({ message: "Product not found" });
           }
+          const trackingId = generateTrackingId();
           const result = await ordersCollection.insertOne({
             ...paymentInfo,
             status: "pending",
@@ -351,7 +356,7 @@ async function run() {
             quantity: parseInt(paymentInfo.orderQuantity),
             price: parseInt(paymentInfo.totalPrice),
             image: paymentInfo.images[0],
-            trackingId: generateTrackingId(),
+            trackingId,
             createdAt: new Date().toISOString(),
           });
           await productsCollection.updateOne(
@@ -362,7 +367,7 @@ async function run() {
           res.send({
             success: true,
             orderId: result.insertedId,
-            trackingId: paymentInfo.trackingId,
+            trackingId,
           });
         } catch (err) {
           console.log(err);
